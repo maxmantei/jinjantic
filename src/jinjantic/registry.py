@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, Template, select_autoescape
 from pydantic import BaseModel
 
+from .endpoint import EndpointDecorator
 from .exceptions import (
     BlockNotFoundError,
     TemplateRegistrationError,
@@ -65,6 +66,11 @@ class TemplateRegistry:
             )
         self._validate_on_register = validate_on_register
         self._bindings: dict[type[BaseModel], TemplateBinding] = {}
+
+    @property
+    def endpoint(self) -> EndpointDecorator:
+        """FastAPI route decorator rendering returned registered models."""
+        return EndpointDecorator(self)
 
     def template[M: BaseModel](
         self, path: str, *, block: str | None = None

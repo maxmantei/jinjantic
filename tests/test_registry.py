@@ -1,10 +1,15 @@
 from pathlib import Path
 
 import pytest
-from jinja2 import DictLoader, Environment
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
+from jinja2 import DictLoader, Environment, TemplateNotFound
+from pydantic import BaseModel, ConfigDict, computed_field
 
-from jinjantic import TemplateRegistry, UnregisteredModelError
+from jinjantic import (
+    TemplateRegistrationError,
+    TemplateRegistry,
+    UnregisteredModelError,
+)
 
 
 def write_template(directory: Path, name: str, source: str) -> Path:
@@ -80,3 +85,196 @@ def test_unregistered_model_cannot_be_rendered() -> None:
 
     with pytest.raises(UnregisteredModelError):
         registry.render(Card(name="Ada"))
+
+
+def test_duplicate_registration_raises() -> None:
+    env = Environment(loader=DictLoader({"a.html": "a", "b.html": "b"}))
+    registry = TemplateRegistry(env)
+    registry.register(Card, "a.html")
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.register(Card, "b.html")
+
+
+def test_duplicate_registration_via_decorator_raises() -> None:
+    env = Environment(loader=DictLoader({"a.html": "a"}))
+    registry = TemplateRegistry(env)
+
+    class DuplicateCard(BaseModel):
+        name: str
+
+    registry.register(DuplicateCard, "a.html")
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.template("a.html")(DuplicateCard)
+
+
+def test_multiple_models_may_share_one_template() -> None:
+    env = Environment(loader=DictLoader({"row.html": "{{ name }}"}))
+    registry = TemplateRegistry(env)
+
+    class UserRow(BaseModel):
+        name: str
+
+    class ProductRow(BaseModel):
+        name: str
+
+    registry.register(UserRow, "row.html")
+    registry.register(ProductRow, "row.html")
+
+    assert registry.render(UserRow(name="Ada")) == "Ada"
+    assert registry.render(ProductRow(name="Widget")) == "Widget"
+
+
+def test_missing_template_raises_on_eager_validation(tmp_path: Path) -> None:
+    registry = TemplateRegistry(tmp_path)
+
+    with pytest.raises(TemplateNotFound):
+        registry.register(Card, "missing.html")
+
+
+def test_deferred_validation_reports_missing_template(tmp_path: Path) -> None:
+    registry = TemplateRegistry(tmp_path, validate_on_register=False)
+    registry.register(Card, "missing.html")
+
+    with pytest.raises(TemplateNotFound):
+        registry.validate()
+
+
+def test_deferred_validation_passes_once_template_exists(tmp_path: Path) -> None:
+    registry = TemplateRegistry(tmp_path, validate_on_register=False)
+    registry.register(Card, "card.html")
+    write_template(tmp_path, "card.html", "Hello {{ name }}!")
+
+    registry.validate()
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+
+def test_render_resolves_template_lazily_when_not_eagerly_validated(
+    tmp_path: Path,
+) -> None:
+    registry = TemplateRegistry(tmp_path, validate_on_register=False)
+    registry.register(Card, "card.html")
+    write_template(tmp_path, "card.html", "Late {{ name }}")
+
+    assert registry.render(Card(name="Ada")) == "Late Ada"
+
+
+def test_context_unpacks_fields_computed_fields_and_extras() -> None:
+    class User(BaseModel):
+        model_config = ConfigDict(extra="allow")
+
+        first: str
+        last: str
+
+        @computed_field
+        @property
+        def full_name(self) -> str:
+            return f"{self.first} {self.last}"
+
+    env = Environment(
+        loader=DictLoader({"user.html": "{{ first }}|{{ full_name }}|{{ nickname }}"})
+    )
+    registry = TemplateRegistry(env)
+    registry.register(User, "user.html")
+
+    user = User(first="Ada", last="Lovelace", nickname="ada")
+
+    assert registry.render(user) == "Ada|Ada Lovelace|ada"
+
+
+def test_context_keeps_nested_models_and_methods_live() -> None:
+    class Profile(BaseModel):
+        name: str
+
+        def display_name(self) -> str:
+            return f"@{self.name}"
+
+        @property
+        def shouty_name(self) -> str:
+            return self.name.upper()
+
+    class UserCard(BaseModel):
+        user: Profile
+
+    env = Environment(
+        loader=DictLoader(
+            {"card.html": "{{ user.display_name() }} {{ user.shouty_name }}"}
+        )
+    )
+    registry = TemplateRegistry(env)
+    registry.register(UserCard, "card.html")
+
+    card = UserCard(user=Profile(name="ada"))
+
+    assert registry.render(card) == "@ada ADA"
+
+
+def test_context_unpacks_nested_models_without_serializing_them() -> None:
+    class Profile(BaseModel):
+        name: str
+
+    class UserCard(BaseModel):
+        profile: Profile
+
+    env = Environment(loader=DictLoader({"card.html": "{{ profile.name }}"}))
+    registry = TemplateRegistry(env)
+    registry.register(UserCard, "card.html")
+
+    assert registry.render(UserCard(profile=Profile(name="ada"))) == "ada"
+
+
+def test_render_escapes_html_from_path_constructed_registry(tmp_path: Path) -> None:
+    write_template(tmp_path, "card.html", "Hello {{ name }}!")
+
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Card, "card.html")
+
+    assert registry.render(Card(name="<b>Ada</b>")) == "Hello &lt;b&gt;Ada&lt;/b&gt;!"
+
+
+def test_render_response_returns_html_response_with_defaults(tmp_path: Path) -> None:
+    write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Card, "card.html")
+
+    response = registry.render_response(Card(name="Ada"))
+
+    assert isinstance(response, HTMLResponse)
+    assert response.status_code == 200
+    assert response.body == b"Hello Ada!"
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+
+
+def test_render_response_honors_status_code_and_headers(tmp_path: Path) -> None:
+    write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Card, "card.html")
+
+    response = registry.render_response(
+        Card(name="Ada"),
+        status_code=201,
+        headers={"HX-Trigger": "card-updated"},
+    )
+
+    assert response.status_code == 201
+    assert response.headers["HX-Trigger"] == "card-updated"
+    assert response.body == b"Hello Ada!"
+
+
+def test_render_response_honors_media_type(tmp_path: Path) -> None:
+    write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Card, "card.html")
+
+    response = registry.render_response(Card(name="Ada"), media_type="text/plain")
+
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+def test_render_response_rejects_unregistered_model(tmp_path: Path) -> None:
+    registry = TemplateRegistry(tmp_path)
+
+    with pytest.raises(UnregisteredModelError):
+        registry.render_response(Card(name="Ada"))

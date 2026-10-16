@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, Template, select_autoescape
 from pydantic import BaseModel
 
-from .exceptions import UnregisteredModelError
+from .exceptions import TemplateRegistrationError, UnregisteredModelError
 
 
 @dataclass(slots=True)
@@ -57,11 +57,20 @@ class TemplateRegistry:
 
     def register[M: BaseModel](self, model: type[M], path: str) -> type[M]:
         """Bind ``model`` to the template at ``path`` and return the model class."""
+        if model in self._bindings:
+            raise TemplateRegistrationError(
+                f"{model.__qualname__} is already registered in this TemplateRegistry"
+            )
         template = self.env.get_template(path) if self._validate_on_register else None
         self._bindings[model] = TemplateBinding(
             model=model, template_name=path, template=template
         )
         return model
+
+    def validate(self) -> None:
+        """Validate every registered binding, resolving its template."""
+        for binding in self._bindings.values():
+            binding.template = self.env.get_template(binding.template_name)
 
     def render(self, data: BaseModel) -> str:
         """Render a registered model instance to HTML synchronously."""
@@ -75,5 +84,27 @@ class TemplateRegistry:
             template = self.env.get_template(binding.template_name)
         return template.render(self._context(data))
 
+    def render_response(
+        self,
+        data: BaseModel,
+        *,
+        status_code: int = 200,
+        headers: Mapping[str, str] | None = None,
+        media_type: str | None = None,
+    ) -> HTMLResponse:
+        """Render a registered model instance into a FastAPI ``HTMLResponse``."""
+        return HTMLResponse(
+            content=self.render(data),
+            status_code=status_code,
+            headers=headers,
+            media_type=media_type,
+        )
+
     def _context(self, data: BaseModel) -> dict[str, Any]:
-        return {name: getattr(data, name) for name in type(data).model_fields}
+        model = type(data)
+        names = set(model.model_fields) | set(model.model_computed_fields)
+        context = {name: getattr(data, name) for name in names}
+        extra = data.__pydantic_extra__
+        if extra:
+            context |= {name: getattr(data, name) for name in extra}
+        return context

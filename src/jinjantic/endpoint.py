@@ -102,10 +102,12 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
                     f"{member!r} of return annotation {annotation!r}: expected "
                     f"a BaseModel subclass or a Response subclass"
                 )
-        if not models and not allows_response:
+        if not models:
             raise TemplateRegistrationError(
                 f"cannot determine a template model from return annotation "
-                f"{annotation!r}"
+                f"{annotation!r}: expected at least one BaseModel subclass, "
+                f"pass an explicit model to registry.endpoint for routes that "
+                f"only return Response objects"
             )
         return ReturnAnnotation(models=tuple(models), allows_response=allows_response)
     if get_origin(annotation) in _SEQUENCE_ORIGINS:
@@ -115,7 +117,11 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return ReturnAnnotation(models=(annotation,))
     if _is_response_class(annotation):
-        return ReturnAnnotation(models=(), allows_response=True)
+        raise TemplateRegistrationError(
+            f"cannot determine a template model from return annotation "
+            f"{annotation!r}: pass an explicit model to registry.endpoint for "
+            f"routes that only return Response objects"
+        )
     raise TemplateRegistrationError(
         f"cannot determine a template model from return annotation "
         f"{annotation!r}: expected a BaseModel subclass, a union of "

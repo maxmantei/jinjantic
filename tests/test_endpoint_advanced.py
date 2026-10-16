@@ -181,12 +181,36 @@ def test_response_member_of_union_passes_through_untouched(
     assert passed_through.text == ""
 
 
-def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
+def test_bare_response_annotation_fails_at_decoration_time(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+
+    async def legacy() -> RedirectResponse:
+        return RedirectResponse("/target", status_code=307)
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(legacy)
+
+
+def test_response_only_union_fails_at_decoration_time(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+
+    async def go() -> RedirectResponse | StreamingResponse:
+        return RedirectResponse("/target", status_code=307)
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(go)
+
+
+def test_bare_response_annotation_with_explicit_model_passes_through(
+    tmp_path: Path,
+) -> None:
     registry = build_registry(tmp_path)
     app = FastAPI()
 
     @app.get("/legacy")
-    @registry.endpoint
+    @registry.endpoint(model=UserCard)
     async def legacy() -> RedirectResponse:
         return RedirectResponse("/target", status_code=307)
 

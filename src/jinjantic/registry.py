@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, Template, select_autoescape
 from pydantic import BaseModel
 
-from .endpoint import EndpointDecorator
+from .endpoint import _EndpointDecorator
 from .exceptions import (
     BlockNotFoundError,
     TemplateRegistrationError,
@@ -19,17 +19,35 @@ from .exceptions import (
 type Renderable = BaseModel | Sequence[BaseModel]
 
 
-def _parse_path(path: str, block: str | None) -> tuple[str, str | None]:
+class TemplateTarget(NamedTuple):
+    """A template path split into a template name and an optional block name."""
+
+    template_name: str
+    block_name: str | None
+
+
+def _parse_path(path: str, block: str | None) -> TemplateTarget:
     """Split ``"path.html#block"`` and reconcile it with ``block=...``."""
-    template_name, separator, fragment = path.partition("#")
+    template_name, separator, block_name = path.partition("#")
     if not separator:
-        return path, block
-    if block is not None and block != fragment:
+        return TemplateTarget(path, block)
+    if block is not None and block != block_name:
         raise TemplateRegistrationError(
             f"Conflicting block names for {path!r}: "
-            f"path names {fragment!r} but block={block!r} was passed"
+            f"path names {block_name!r} but block={block!r} was passed"
         )
-    return template_name, fragment
+    return TemplateTarget(template_name, block_name)
+
+
+def _render_block(template: Template, block_name: str, context: dict[str, Any]) -> str:
+    """Render the named block fragment without executing parent layouts.
+
+    Only the block is evaluated; ``{% extends %}`` parents are not rendered
+    and ``{{ super() }}`` is unavailable inside a fragment.
+    """
+    return template.environment.concat(
+        template.blocks[block_name](template.new_context(context))
+    )
 
 
 @dataclass(slots=True)
@@ -68,14 +86,24 @@ class TemplateRegistry:
         self._bindings: dict[type[BaseModel], TemplateBinding] = {}
 
     @property
-    def endpoint(self) -> EndpointDecorator:
+    def endpoint(self) -> _EndpointDecorator:
         """FastAPI route decorator rendering returned registered models."""
-        return EndpointDecorator(self)
+        return _EndpointDecorator(self)
+
+    def is_registered(self, model: type[BaseModel]) -> bool:
+        """Return whether ``model`` is bound to a template in this registry."""
+        return model in self._bindings
 
     def template[M: BaseModel](
         self, path: str, *, block: str | None = None
     ) -> Callable[[type[M]], type[M]]:
-        """Class decorator binding a Pydantic model to a template."""
+        """Class decorator binding a Pydantic model to a template.
+
+        ``path`` may address a block as ``"page.html#block"`` or via
+        ``block=``. Rendering a block fragment executes only that block;
+        parent ``{% extends %}`` layouts are not rendered and ``{{ super() }}``
+        is unavailable inside a fragment.
+        """
 
         def decorator(model: type[M]) -> type[M]:
             self.register(model, path, block=block)
@@ -86,22 +114,28 @@ class TemplateRegistry:
     def register[M: BaseModel](
         self, model: type[M], path: str, *, block: str | None = None
     ) -> type[M]:
-        """Bind ``model`` to the template at ``path`` and return the model class."""
+        """Bind ``model`` to the template at ``path`` and return the model class.
+
+        ``path`` may address a block as ``"page.html#block"`` or via
+        ``block=``. Rendering a block fragment executes only that block;
+        parent ``{% extends %}`` layouts are not rendered and ``{{ super() }}``
+        is unavailable inside a fragment.
+        """
         if model in self._bindings:
             raise TemplateRegistrationError(
                 f"{model.__qualname__} is already registered in this TemplateRegistry"
             )
-        template_name, block_name = _parse_path(path, block)
+        target = _parse_path(path, block)
         template = (
-            self._resolve(template_name, block_name)
+            self._resolve(target.template_name, target.block_name)
             if self._validate_on_register
             else None
         )
         self._bindings[model] = TemplateBinding(
             model=model,
-            template_name=template_name,
+            template_name=target.template_name,
             template=template,
-            block_name=block_name,
+            block_name=target.block_name,
         )
         return model
 
@@ -131,11 +165,7 @@ class TemplateRegistry:
         template = binding.template
         if binding.block_name is None:
             return template.render(self._context(data))
-        return template.environment.concat(
-            template.blocks[binding.block_name](
-                template.new_context(self._context(data))
-            )
-        )
+        return _render_block(template, binding.block_name, self._context(data))
 
     def _resolve(self, template_name: str, block_name: str | None) -> Template:
         template = self.env.get_template(template_name)

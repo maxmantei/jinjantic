@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from .endpoint import _EndpointDecorator
 from .exceptions import (
     BlockNotFoundError,
+    JinjanticError,
     TemplateRegistrationError,
     UnregisteredModelError,
 )
@@ -54,10 +55,8 @@ def _render_block(template: Template, block_name: str, context: dict[str, Any]) 
 class TemplateBinding:
     """Internal binding of a Pydantic model class to a Jinja2 template."""
 
-    model: type[BaseModel]
-    template_name: str
+    target: TemplateTarget
     template: Template | None = None
-    block_name: str | None = None
 
 
 class TemplateRegistry:
@@ -67,10 +66,24 @@ class TemplateRegistry:
         self,
         env_or_directory: Environment | str | Path | Sequence[str | Path],
         *,
-        auto_reload: bool = False,
+        auto_reload: bool | None = None,
         validate_on_register: bool = True,
     ) -> None:
+        """Create a registry from a template directory or an environment.
+
+        When given path(s), a Jinja2 environment with HTML/XML autoescaping
+        is created with ``auto_reload`` enabled only if requested. When given
+        an existing environment, its own ``auto_reload`` governs rendering;
+        passing ``auto_reload`` alongside an environment is an error (set it
+        on the environment itself).
+        """
         if isinstance(env_or_directory, Environment):
+            if auto_reload is not None:
+                raise JinjanticError(
+                    "auto_reload cannot be passed to TemplateRegistry together "
+                    "with a jinja2.Environment; set auto_reload on the "
+                    "environment itself"
+                )
             self.env = env_or_directory
         else:
             if isinstance(env_or_directory, str | Path):
@@ -80,7 +93,7 @@ class TemplateRegistry:
             self.env = Environment(
                 loader=FileSystemLoader(paths),
                 autoescape=select_autoescape(["html", "xml"]),
-                auto_reload=auto_reload,
+                auto_reload=bool(auto_reload),
             )
         self._validate_on_register = validate_on_register
         self._bindings: dict[type[BaseModel], TemplateBinding] = {}
@@ -121,28 +134,24 @@ class TemplateRegistry:
         parent ``{% extends %}`` layouts are not rendered and ``{{ super() }}``
         is unavailable inside a fragment.
         """
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            raise TemplateRegistrationError(
+                f"registry.register() expects a Pydantic BaseModel subclass, "
+                f"got {model!r}"
+            )
         if model in self._bindings:
             raise TemplateRegistrationError(
                 f"{model.__qualname__} is already registered in this TemplateRegistry"
             )
         target = _parse_path(path, block)
-        template = (
-            self._resolve(target.template_name, target.block_name)
-            if self._validate_on_register
-            else None
-        )
-        self._bindings[model] = TemplateBinding(
-            model=model,
-            template_name=target.template_name,
-            template=template,
-            block_name=target.block_name,
-        )
+        template = self._resolve(target) if self._validate_on_register else None
+        self._bindings[model] = TemplateBinding(target=target, template=template)
         return model
 
     def validate(self) -> None:
         """Validate every registered binding, resolving its template."""
         for binding in self._bindings.values():
-            binding.template = self._resolve(binding.template_name, binding.block_name)
+            binding.template = self._resolve(binding.target)
 
     def render(self, data: Renderable) -> str:
         """Render registered model instance(s) to HTML synchronously."""
@@ -150,7 +159,8 @@ class TemplateRegistry:
             return self._render_one(data)
         if isinstance(data, str | bytes | bytearray):
             raise UnregisteredModelError(
-                f"{type(data).__qualname__} is not registered in this TemplateRegistry"
+                f"render() expects a registered BaseModel instance or a "
+                f"sequence of them, got {type(data).__name__}"
             )
         return "".join(self._render_one(model) for model in data)
 
@@ -161,25 +171,20 @@ class TemplateRegistry:
                 f"{type(data).__qualname__} is not registered in this TemplateRegistry"
             )
         if binding.template is None or self.env.auto_reload:
-            binding.template = self._resolve(binding.template_name, binding.block_name)
+            binding.template = self._resolve(binding.target)
         template = binding.template
-        if binding.block_name is None:
+        if binding.target.block_name is None:
             return template.render(self._context(data))
-        return _render_block(template, binding.block_name, self._context(data))
+        return _render_block(template, binding.target.block_name, self._context(data))
 
-    def _resolve(self, template_name: str, block_name: str | None) -> Template:
-        template = self.env.get_template(template_name)
-        self._require_block(template, template_name, block_name)
-        return template
-
-    @staticmethod
-    def _require_block(
-        template: Template, template_name: str, block_name: str | None
-    ) -> None:
-        if block_name is not None and block_name not in template.blocks:
+    def _resolve(self, target: TemplateTarget) -> Template:
+        template = self.env.get_template(target.template_name)
+        if target.block_name is not None and target.block_name not in template.blocks:
             raise BlockNotFoundError(
-                f"Template {template_name!r} has no block named {block_name!r}"
+                f"Template {target.template_name!r} has no block named "
+                f"{target.block_name!r}"
             )
+        return template
 
     def render_response(
         self,

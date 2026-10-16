@@ -14,6 +14,7 @@ from jinja2 import (
 from pydantic import BaseModel, ConfigDict, computed_field
 
 from jinjantic import (
+    JinjanticError,
     TemplateRegistrationError,
     TemplateRegistry,
     UnregisteredModelError,
@@ -50,6 +51,32 @@ def test_registry_from_existing_environment() -> None:
     registry.register(Card, "card.html")
 
     assert registry.render(Card(name="Ada")) == "Hi Ada"
+
+
+def test_auto_reload_rejected_with_existing_environment() -> None:
+    env = Environment(loader=DictLoader({"card.html": "Hi {{ name }}"}))
+
+    with pytest.raises(JinjanticError, match="auto_reload"):
+        TemplateRegistry(env, auto_reload=True)
+
+    with pytest.raises(JinjanticError, match="auto_reload"):
+        TemplateRegistry(env, auto_reload=False)
+
+
+def test_register_rejects_non_base_model_class() -> None:
+    env = Environment(loader=DictLoader({"card.html": "Hi {{ name }}"}))
+    registry = TemplateRegistry(env)
+
+    class NotAModel:
+        name = "Ada"
+
+    with pytest.raises(TemplateRegistrationError, match="BaseModel"):
+        registry.register(NotAModel, "card.html")  # ty: ignore[invalid-argument-type]
+
+    with pytest.raises(TemplateRegistrationError, match="BaseModel"):
+        registry.template("card.html")(
+            NotAModel  # ty: ignore[invalid-argument-type]
+        )
 
 
 def test_register_returns_the_model_class() -> None:

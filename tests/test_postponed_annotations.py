@@ -94,5 +94,5 @@ def test_locally_defined_model_with_postponed_annotation_raises_registration_err
     async def get_card() -> LocalCard:
         return LocalCard(name="Ada")
 
-    with pytest.raises(TemplateRegistrationError):
+    with pytest.raises(TemplateRegistrationError, match="explicit model"):
         registry.endpoint(get_card)

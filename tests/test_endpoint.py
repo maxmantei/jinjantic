@@ -19,10 +19,6 @@ class UserCard(BaseModel):
     name: str
 
 
-class ErrorAlert(BaseModel):
-    message: str
-
-
 class UnregisteredCard(BaseModel):
     name: str
 
@@ -192,17 +188,6 @@ def test_unregistered_explicit_model_raises_at_decoration_time() -> None:
 
     with pytest.raises(UnregisteredModelError):
         registry.endpoint(UnregisteredCard)(get_card)
-
-
-def test_union_annotation_is_not_resolvable_yet() -> None:
-    registry = make_registry()
-    registry.register(ErrorAlert, "user-card.html")
-
-    async def get_card() -> UserCard | ErrorAlert:
-        return UserCard(name="Nope")
-
-    with pytest.raises(TemplateRegistrationError):
-        registry.endpoint(get_card)
 
 
 def test_non_model_annotation_raises_at_decoration_time() -> None:

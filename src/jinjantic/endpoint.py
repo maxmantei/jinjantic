@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import inspect
 import types
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
@@ -16,6 +16,8 @@ from .exceptions import TemplateRegistrationError, UnregisteredModelError
 
 if TYPE_CHECKING:
     from .registry import TemplateRegistry
+
+_SEQUENCE_ORIGINS = (list, tuple, Sequence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +31,42 @@ class ReturnAnnotation:
 
 def _is_response_class(annotation: Any) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, Response)
+
+
+def _sequence_models(annotation: Any) -> list[type[BaseModel]]:
+    """Extract the ``BaseModel`` classes referenced by a sequence annotation."""
+    models: list[type[BaseModel]] = []
+    for element in get_args(annotation):
+        if element is Ellipsis:
+            continue
+        if isinstance(element, type) and issubclass(element, BaseModel):
+            models.append(element)
+            continue
+        if get_origin(element) in (types.UnionType, Union):
+            union_models: list[type[BaseModel]] = []
+            for member in get_args(element):
+                if member is type(None):
+                    continue
+                if not (isinstance(member, type) and issubclass(member, BaseModel)):
+                    raise TemplateRegistrationError(
+                        f"cannot determine a template model from union member "
+                        f"{member!r} in sequence return annotation "
+                        f"{annotation!r}: expected a BaseModel subclass"
+                    )
+                union_models.append(member)
+            if union_models:
+                models.extend(union_models)
+                continue
+        raise TemplateRegistrationError(
+            f"cannot determine a template model from sequence element "
+            f"{element!r} of return annotation {annotation!r}: expected "
+            f"BaseModel subclasses"
+        )
+    if not models:
+        raise TemplateRegistrationError(
+            f"cannot determine a template model from return annotation {annotation!r}"
+        )
+    return models
 
 
 def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
@@ -60,6 +98,10 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
                 f"{annotation!r}"
             )
         return ReturnAnnotation(models=tuple(models), allows_response=allows_response)
+    if get_origin(annotation) in _SEQUENCE_ORIGINS:
+        return ReturnAnnotation(
+            models=tuple(_sequence_models(annotation)), is_sequence=True
+        )
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return ReturnAnnotation(models=(annotation,))
     if _is_response_class(annotation):
@@ -164,6 +206,12 @@ class EndpointDecorator:
                 )
 
 
+def _is_renderable_sequence(result: Any) -> bool:
+    return isinstance(result, Sequence) and not isinstance(
+        result, str | bytes | bytearray
+    )
+
+
 def _to_response(
     result: Any,
     *,
@@ -174,12 +222,13 @@ def _to_response(
 ) -> Response:
     if isinstance(result, Response):
         return result
-    if isinstance(result, BaseModel):
+    if isinstance(result, BaseModel) or _is_renderable_sequence(result):
         kwargs: dict[str, Any] = {"status_code": status_code, "headers": headers}
         if media_type is not None:
             kwargs["media_type"] = media_type
         return registry.render_response(result, **kwargs)
     raise TypeError(
         f"endpoint decorated with registry.endpoint must return a registered "
-        f"BaseModel or a Response, got {type(result).__qualname__}"
+        f"BaseModel, a Sequence of BaseModels, or a Response, "
+        f"got {type(result).__qualname__}"
     )

@@ -181,12 +181,36 @@ def test_response_member_of_union_passes_through_untouched(
     assert passed_through.text == ""
 
 
-def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
+def test_bare_response_annotation_fails_at_decoration_time(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+
+    async def legacy() -> RedirectResponse:
+        return RedirectResponse("/target", status_code=307)
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(legacy)
+
+
+def test_response_only_union_fails_at_decoration_time(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+
+    async def go() -> RedirectResponse | StreamingResponse:
+        return RedirectResponse("/target", status_code=307)
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(go)
+
+
+def test_bare_response_annotation_with_explicit_model_passes_through(
+    tmp_path: Path,
+) -> None:
     registry = build_registry(tmp_path)
     app = FastAPI()
 
     @app.get("/legacy")
-    @registry.endpoint
+    @registry.endpoint(model=UserCard)
     async def legacy() -> RedirectResponse:
         return RedirectResponse("/target", status_code=307)
 
@@ -194,6 +218,42 @@ def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "/target"
+
+
+def test_optional_model_annotation_fails_at_decoration_time(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+
+    async def maybe() -> UserCard | None:
+        return UserCard(name="Ada")
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(maybe)
+
+
+def test_optional_sequence_element_annotation_fails_at_decoration_time(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+
+    async def rows() -> list[UserCard | None]:
+        return []
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(rows)
+
+
+def test_optional_annotation_with_explicit_model_renders(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/maybe")
+    @registry.endpoint(model=UserCard)
+    async def maybe() -> UserCard | None:
+        return UserCard(name="Ada")
+
+    assert TestClient(app).get("/maybe").text == "<h1>Ada</h1>"
 
 
 def test_typing_union_annotation_renders_returned_model(tmp_path: Path) -> None:
@@ -253,6 +313,63 @@ def test_injected_response_headers_cookie_and_status_are_merged(
     assert response.cookies["session"] == "abc"
     assert response.text == "<h1>Ada</h1>"
     assert response.headers["content-type"] == "text/html; charset=utf-8"
+
+
+def test_injected_response_header_overwrites_decorator_header(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/save")
+    @registry.endpoint(headers={"X-Tag": "decorator", "X-Keep": "kept"})
+    async def save(response: Response) -> UserCard:
+        response.headers["X-Tag"] = "injected"
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/save")
+
+    assert response.status_code == 200
+    assert response.headers.get_list("X-Tag") == ["injected"]
+    assert response.headers["X-Keep"] == "kept"
+    assert response.text == "<h1>Ada</h1>"
+
+
+def test_injected_response_cannot_corrupt_rendered_headers(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/save")
+    @registry.endpoint
+    async def save(response: Response) -> UserCard:
+        response.headers["content-type"] = "text/plain"
+        response.headers["content-length"] = "999"
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/save")
+
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+    assert response.headers["content-length"] == str(len(response.content))
+    assert response.text == "<h1>Ada</h1>"
+
+
+def test_injected_response_preserves_multiple_cookies(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/login")
+    @registry.endpoint
+    async def login(response: Response) -> UserCard:
+        response.set_cookie("session", "abc")
+        response.set_cookie("theme", "dark")
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/login")
+
+    assert response.cookies["session"] == "abc"
+    assert response.cookies["theme"] == "dark"
 
 
 def test_injected_response_without_status_keeps_endpoint_status(

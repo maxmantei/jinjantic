@@ -1,8 +1,8 @@
-import os
 from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import bump_mtime, write_template
 from fastapi.responses import HTMLResponse
 from jinja2 import (
     DictLoader,
@@ -18,13 +18,6 @@ from jinjantic import (
     TemplateRegistry,
     UnregisteredModelError,
 )
-
-
-def write_template(directory: Path, name: str, source: str) -> Path:
-    path = directory / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source)
-    return path
 
 
 class Card(BaseModel):
@@ -169,6 +162,35 @@ def test_render_resolves_template_lazily_when_not_eagerly_validated(
     assert registry.render(Card(name="Ada")) == "Late Ada"
 
 
+def test_deferred_lazy_resolve_caches_template_on_binding(tmp_path: Path) -> None:
+    path = write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    registry = TemplateRegistry(tmp_path, validate_on_register=False)
+    registry.register(Card, "card.html")
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+    path.unlink()
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+
+def test_deferred_lazy_resolve_does_no_disk_io_with_uncached_environment(
+    tmp_path: Path,
+) -> None:
+    path = write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    env = Environment(
+        loader=FileSystemLoader(tmp_path), cache_size=0, auto_reload=False
+    )
+    registry = TemplateRegistry(env, validate_on_register=False)
+    registry.register(Card, "card.html")
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+    path.unlink()
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+
 def test_context_unpacks_fields_computed_fields_and_extras() -> None:
     class User(BaseModel):
         model_config = ConfigDict(extra="allow")
@@ -286,11 +308,6 @@ def test_render_response_rejects_unregistered_model(tmp_path: Path) -> None:
 
     with pytest.raises(UnregisteredModelError):
         registry.render_response(Card(name="Ada"))
-
-
-def bump_mtime(path: Path) -> None:
-    future = path.stat().st_mtime + 10
-    os.utime(path, (future, future))
 
 
 def test_auto_reload_true_reflects_template_edits(tmp_path: Path) -> None:

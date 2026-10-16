@@ -164,7 +164,7 @@ class EndpointDecorator:
         headers: Mapping[str, str] | None,
         media_type: str | None,
     ) -> Callable[..., Any]:
-        signature = inspect.signature(fn)
+        signature = _resolved_signature(fn)
         if model is not None:
             models = (model,)
         else:
@@ -219,6 +219,19 @@ def _is_renderable_sequence(result: Any) -> bool:
     return isinstance(result, Sequence) and not isinstance(
         result, str | bytes | bytearray
     )
+
+
+def _resolved_signature(fn: Callable[..., Any]) -> inspect.Signature:
+    """Return the signature with string annotations evaluated if possible.
+
+    Handles postponed annotations (``from __future__ import annotations``).
+    Falls back to the raw signature when an annotation cannot be evaluated,
+    for example a model defined in a local scope.
+    """
+    try:
+        return inspect.signature(fn, eval_str=True)
+    except NameError, TypeError, SyntaxError, AttributeError:
+        return inspect.signature(fn)
 
 
 def _response_param_name(signature: inspect.Signature) -> str | None:

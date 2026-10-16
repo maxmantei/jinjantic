@@ -1,8 +1,8 @@
-import os
 from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import bump_mtime, write_template
 from fastapi.responses import HTMLResponse
 from jinja2 import (
     DictLoader,
@@ -18,13 +18,6 @@ from jinjantic import (
     TemplateRegistry,
     UnregisteredModelError,
 )
-
-
-def write_template(directory: Path, name: str, source: str) -> Path:
-    path = directory / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source)
-    return path
 
 
 class Card(BaseModel):
@@ -315,11 +308,6 @@ def test_render_response_rejects_unregistered_model(tmp_path: Path) -> None:
 
     with pytest.raises(UnregisteredModelError):
         registry.render_response(Card(name="Ada"))
-
-
-def bump_mtime(path: Path) -> None:
-    future = path.stat().st_mtime + 10
-    os.utime(path, (future, future))
 
 
 def test_auto_reload_true_reflects_template_edits(tmp_path: Path) -> None:

@@ -170,27 +170,36 @@ class EndpointDecorator:
         else:
             models = analyze_return_annotation(signature.return_annotation).models
         self._validate_registered(models)
+        response_param = _response_param_name(signature)
 
-        def render(result: Any) -> Response:
+        def render(result: Any, injected: Response | None = None) -> Response:
             return _to_response(
                 result,
                 registry=self._registry,
                 status_code=status_code,
                 headers=headers,
                 media_type=media_type,
+                injected=injected,
             )
+
+        def injected_response(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+            if response_param is None:
+                return None
+            return _find_argument(signature, response_param, args, kwargs)
 
         if inspect.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
             async def wrapper(*args: Any, **kwargs: Any) -> Response:
-                return render(await fn(*args, **kwargs))
+                injected = injected_response(args, kwargs)
+                return render(await fn(*args, **kwargs), injected)
 
         else:
 
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Response:
-                return render(fn(*args, **kwargs))
+                injected = injected_response(args, kwargs)
+                return render(fn(*args, **kwargs), injected)
 
         cast(Any, wrapper).__signature__ = signature.replace(
             return_annotation=HTMLResponse
@@ -212,6 +221,35 @@ def _is_renderable_sequence(result: Any) -> bool:
     )
 
 
+def _response_param_name(signature: inspect.Signature) -> str | None:
+    """Name of the parameter FastAPI injects a ``Response`` into, if any."""
+    for name, parameter in signature.parameters.items():
+        if _is_response_class(parameter.annotation):
+            return name
+    return None
+
+
+def _find_argument(
+    signature: inspect.Signature,
+    name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    if name in kwargs:
+        return kwargs[name]
+    index = list(signature.parameters).index(name)
+    return args[index] if index < len(args) else None
+
+
+def _merge_injected(response: HTMLResponse, injected: Response) -> None:
+    """Copy mutations made on an injected ``Response`` onto ``response``."""
+    for key, value in injected.raw_headers:
+        if key.lower() not in (b"content-length", b"content-type"):
+            response.raw_headers.append((key, value))
+    if injected.status_code is not None:
+        response.status_code = injected.status_code
+
+
 def _to_response(
     result: Any,
     *,
@@ -219,6 +257,7 @@ def _to_response(
     status_code: int,
     headers: Mapping[str, str] | None,
     media_type: str | None,
+    injected: Response | None = None,
 ) -> Response:
     if isinstance(result, Response):
         return result
@@ -226,7 +265,10 @@ def _to_response(
         kwargs: dict[str, Any] = {"status_code": status_code, "headers": headers}
         if media_type is not None:
             kwargs["media_type"] = media_type
-        return registry.render_response(result, **kwargs)
+        rendered = registry.render_response(result, **kwargs)
+        if injected is not None:
+            _merge_injected(rendered, injected)
+        return rendered
     raise TypeError(
         f"endpoint decorated with registry.endpoint must return a registered "
         f"BaseModel, a Sequence of BaseModels, or a Response, "

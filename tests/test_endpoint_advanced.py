@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -192,3 +192,84 @@ def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "/target"
+
+
+def test_injected_response_headers_cookie_and_status_are_merged(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/save")
+    @registry.endpoint
+    async def save(response: Response) -> UserCard:
+        response.headers["HX-Trigger"] = "saved"
+        response.set_cookie("session", "abc")
+        response.status_code = 201
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/save")
+
+    assert response.status_code == 201
+    assert response.headers["HX-Trigger"] == "saved"
+    assert response.cookies["session"] == "abc"
+    assert response.text == "<h1>Ada</h1>"
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+
+
+def test_injected_response_without_status_keeps_endpoint_status(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/accepted")
+    @registry.endpoint(status_code=202)
+    async def accepted(response: Response) -> UserCard:
+        response.headers["HX-Trigger"] = "accepted"
+        return UserCard(name="Ada")
+
+    response = TestClient(app).get("/accepted")
+
+    assert response.status_code == 202
+    assert response.headers["HX-Trigger"] == "accepted"
+
+
+def test_injected_response_mutations_do_not_touch_pass_through(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/go")
+    @registry.endpoint
+    async def go(response: Response) -> UserCard | RedirectResponse:
+        response.headers["HX-Trigger"] = "should-not-appear"
+        response.set_cookie("session", "abc")
+        response.status_code = 201
+        return RedirectResponse("/target", status_code=307)
+
+    response = TestClient(app).get("/go", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert "HX-Trigger" not in response.headers
+    assert "set-cookie" not in response.headers
+
+
+def test_injected_response_merges_onto_sequence_rendering(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/rows")
+    @registry.endpoint
+    def rows(response: Response) -> list[UserRow]:
+        response.headers["HX-Trigger"] = "rows"
+        return [UserRow(name="a"), UserRow(name="b")]
+
+    response = TestClient(app).get("/rows")
+
+    assert response.status_code == 200
+    assert response.headers["HX-Trigger"] == "rows"
+    assert response.text == "<li>a</li><li>b</li>"

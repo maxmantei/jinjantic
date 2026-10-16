@@ -255,6 +255,63 @@ def test_injected_response_headers_cookie_and_status_are_merged(
     assert response.headers["content-type"] == "text/html; charset=utf-8"
 
 
+def test_injected_response_header_overwrites_decorator_header(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/save")
+    @registry.endpoint(headers={"X-Tag": "decorator", "X-Keep": "kept"})
+    async def save(response: Response) -> UserCard:
+        response.headers["X-Tag"] = "injected"
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/save")
+
+    assert response.status_code == 200
+    assert response.headers.get_list("X-Tag") == ["injected"]
+    assert response.headers["X-Keep"] == "kept"
+    assert response.text == "<h1>Ada</h1>"
+
+
+def test_injected_response_cannot_corrupt_rendered_headers(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/save")
+    @registry.endpoint
+    async def save(response: Response) -> UserCard:
+        response.headers["content-type"] = "text/plain"
+        response.headers["content-length"] = "999"
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/save")
+
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+    assert response.headers["content-length"] == str(len(response.content))
+    assert response.text == "<h1>Ada</h1>"
+
+
+def test_injected_response_preserves_multiple_cookies(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.post("/login")
+    @registry.endpoint
+    async def login(response: Response) -> UserCard:
+        response.set_cookie("session", "abc")
+        response.set_cookie("theme", "dark")
+        return UserCard(name="Ada")
+
+    response = TestClient(app).post("/login")
+
+    assert response.cookies["session"] == "abc"
+    assert response.cookies["theme"] == "dark"
+
+
 def test_injected_response_without_status_keeps_endpoint_status(
     tmp_path: Path,
 ) -> None:

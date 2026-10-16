@@ -255,10 +255,19 @@ def _find_argument(
 
 
 def _merge_injected(response: HTMLResponse, injected: Response) -> None:
-    """Copy mutations made on an injected ``Response`` onto ``response``."""
+    """Copy mutations made on an injected ``Response`` onto ``response``.
+
+    Injected headers overwrite same-named headers on ``response``; cookies
+    are kept as separate ``set-cookie`` headers.
+    """
     for key, value in injected.raw_headers:
-        if key.lower() not in (b"content-length", b"content-type"):
+        name = key.lower()
+        if name in (b"content-length", b"content-type"):
+            continue
+        if name == b"set-cookie":
             response.raw_headers.append((key, value))
+        else:
+            response.headers[key.decode("latin-1")] = value.decode("latin-1")
     if injected.status_code is not None:
         response.status_code = injected.status_code
 

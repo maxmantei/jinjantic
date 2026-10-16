@@ -196,6 +196,42 @@ def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
     assert response.headers["location"] == "/target"
 
 
+def test_optional_model_annotation_fails_at_decoration_time(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+
+    async def maybe() -> UserCard | None:
+        return UserCard(name="Ada")
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(maybe)
+
+
+def test_optional_sequence_element_annotation_fails_at_decoration_time(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+
+    async def rows() -> list[UserCard | None]:
+        return []
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(rows)
+
+
+def test_optional_annotation_with_explicit_model_renders(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/maybe")
+    @registry.endpoint(model=UserCard)
+    async def maybe() -> UserCard | None:
+        return UserCard(name="Ada")
+
+    assert TestClient(app).get("/maybe").text == "<h1>Ada</h1>"
+
+
 def test_typing_union_annotation_renders_returned_model(tmp_path: Path) -> None:
     registry = build_registry(tmp_path)
     app = FastAPI()

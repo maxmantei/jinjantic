@@ -46,7 +46,12 @@ def _sequence_models(annotation: Any) -> list[type[BaseModel]]:
             union_models: list[type[BaseModel]] = []
             for member in get_args(element):
                 if member is type(None):
-                    continue
+                    raise TemplateRegistrationError(
+                        f"cannot determine a template model from union member "
+                        f"NoneType in sequence return annotation {annotation!r}: "
+                        f"optional returns are not supported, pass an explicit "
+                        f"model to registry.endpoint instead"
+                    )
                 if not (isinstance(member, type) and issubclass(member, BaseModel)):
                     raise TemplateRegistrationError(
                         f"cannot determine a template model from union member "
@@ -81,7 +86,12 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
         allows_response = False
         for member in get_args(annotation):
             if member is type(None):
-                continue
+                raise TemplateRegistrationError(
+                    f"cannot determine a template model from union member "
+                    f"NoneType of return annotation {annotation!r}: optional "
+                    f"returns are not supported, pass an explicit model to "
+                    f"registry.endpoint instead"
+                )
             if isinstance(member, type) and issubclass(member, BaseModel):
                 models.append(member)
             elif _is_response_class(member):

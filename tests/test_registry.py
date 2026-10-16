@@ -1,8 +1,16 @@
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.responses import HTMLResponse
-from jinja2 import DictLoader, Environment, TemplateNotFound
+from jinja2 import (
+    DictLoader,
+    Environment,
+    FileSystemLoader,
+    TemplateNotFound,
+    select_autoescape,
+)
 from pydantic import BaseModel, ConfigDict, computed_field
 
 from jinjantic import (
@@ -278,3 +286,58 @@ def test_render_response_rejects_unregistered_model(tmp_path: Path) -> None:
 
     with pytest.raises(UnregisteredModelError):
         registry.render_response(Card(name="Ada"))
+
+
+def bump_mtime(path: Path) -> None:
+    future = path.stat().st_mtime + 10
+    os.utime(path, (future, future))
+
+
+def test_auto_reload_true_reflects_template_edits(tmp_path: Path) -> None:
+    path = write_template(tmp_path, "card.html", "v1 {{ name }}")
+
+    registry = TemplateRegistry(tmp_path, auto_reload=True)
+    registry.register(Card, "card.html")
+    assert registry.render(Card(name="Ada")) == "v1 Ada"
+
+    path.write_text("v2 {{ name }}")
+    bump_mtime(path)
+
+    assert registry.render(Card(name="Ada")) == "v2 Ada"
+
+
+def test_default_auto_reload_false_uses_cached_template(tmp_path: Path) -> None:
+    path = write_template(tmp_path, "card.html", "v1 {{ name }}")
+
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Card, "card.html")
+    assert registry.render(Card(name="Ada")) == "v1 Ada"
+
+    path.write_text("v2 {{ name }}")
+    bump_mtime(path)
+
+    assert registry.render(Card(name="Ada")) == "v1 Ada"
+
+
+def test_registry_options_are_keyword_only(tmp_path: Path) -> None:
+    registry_cls: Any = TemplateRegistry
+    with pytest.raises(TypeError):
+        registry_cls(tmp_path, True)
+
+
+def test_existing_environment_auto_reload_governs_rendering(tmp_path: Path) -> None:
+    path = write_template(tmp_path, "card.html", "v1 {{ name }}")
+
+    env = Environment(
+        loader=FileSystemLoader(tmp_path),
+        autoescape=select_autoescape(["html"]),
+        auto_reload=True,
+    )
+    registry = TemplateRegistry(env)
+    registry.register(Card, "card.html")
+    assert registry.render(Card(name="Ada")) == "v1 Ada"
+
+    path.write_text("v2 {{ name }}")
+    bump_mtime(path)
+
+    assert registry.render(Card(name="Ada")) == "v2 Ada"

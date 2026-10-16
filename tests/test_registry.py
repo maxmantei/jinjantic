@@ -169,6 +169,35 @@ def test_render_resolves_template_lazily_when_not_eagerly_validated(
     assert registry.render(Card(name="Ada")) == "Late Ada"
 
 
+def test_deferred_lazy_resolve_caches_template_on_binding(tmp_path: Path) -> None:
+    path = write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    registry = TemplateRegistry(tmp_path, validate_on_register=False)
+    registry.register(Card, "card.html")
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+    path.unlink()
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+
+def test_deferred_lazy_resolve_does_no_disk_io_with_uncached_environment(
+    tmp_path: Path,
+) -> None:
+    path = write_template(tmp_path, "card.html", "Hello {{ name }}!")
+    env = Environment(
+        loader=FileSystemLoader(tmp_path), cache_size=0, auto_reload=False
+    )
+    registry = TemplateRegistry(env, validate_on_register=False)
+    registry.register(Card, "card.html")
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+    path.unlink()
+
+    assert registry.render(Card(name="Ada")) == "Hello Ada!"
+
+
 def test_context_unpacks_fields_computed_fields_and_extras() -> None:
     class User(BaseModel):
         model_config = ConfigDict(extra="allow")

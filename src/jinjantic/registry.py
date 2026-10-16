@@ -126,9 +126,9 @@ class TemplateRegistry:
             raise UnregisteredModelError(
                 f"{type(data).__qualname__} is not registered in this TemplateRegistry"
             )
+        if binding.template is None or self.env.auto_reload:
+            binding.template = self._resolve(binding.template_name, binding.block_name)
         template = binding.template
-        if self.env.auto_reload or template is None:
-            template = self._resolve(binding.template_name, binding.block_name)
         if binding.block_name is None:
             return template.render(self._context(data))
         return template.environment.concat(

@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import pytest
-from conftest import bump_mtime, write_template
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from conftest import bump_mtime, write_template
 from jinjantic import (
     BlockNotFoundError,
     TemplateRegistrationError,
@@ -16,9 +16,7 @@ PAGE = "<body>\n{% block row %}<li>{{ name }}</li>{% endblock %}\n</body>"
 
 BASE = "<html>\nBASE-MARKER\n{% block content %}{% endblock %}\n</html>"
 
-CHILD = (
-    '{% extends "base.html" %}\n{% block content %}<li>{{ name }}</li>{% endblock %}'
-)
+CHILD = '{% extends "base.html" %}\n{% block content %}<li>{{ name }}</li>{% endblock %}'
 
 
 class Row(BaseModel):

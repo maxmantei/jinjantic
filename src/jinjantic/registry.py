@@ -46,9 +46,7 @@ def _render_block(template: Template, block_name: str, context: dict[str, Any]) 
     Only the block is evaluated; ``{% extends %}`` parents are not rendered
     and ``{{ super() }}`` is unavailable inside a fragment.
     """
-    return template.environment.concat(
-        template.blocks[block_name](template.new_context(context))
-    )
+    return template.environment.concat(template.blocks[block_name](template.new_context(context)))
 
 
 @dataclass(slots=True)
@@ -136,8 +134,7 @@ class TemplateRegistry:
         """
         if not (isinstance(model, type) and issubclass(model, BaseModel)):
             raise TemplateRegistrationError(
-                f"registry.register() expects a Pydantic BaseModel subclass, "
-                f"got {model!r}"
+                f"registry.register() expects a Pydantic BaseModel subclass, got {model!r}"
             )
         if model in self._bindings:
             raise TemplateRegistrationError(
@@ -181,8 +178,7 @@ class TemplateRegistry:
         template = self.env.get_template(target.template_name)
         if target.block_name is not None and target.block_name not in template.blocks:
             raise BlockNotFoundError(
-                f"Template {target.template_name!r} has no block named "
-                f"{target.block_name!r}"
+                f"Template {target.template_name!r} has no block named {target.block_name!r}"
             )
         return template
 

@@ -83,9 +83,7 @@ def test_postponed_annotations_still_detect_injected_response() -> None:
     assert response.text == "<h1>Ada</h1>"
 
 
-def test_locally_defined_model_with_postponed_annotation_raises_registration_error() -> (
-    None
-):
+def test_locally_defined_model_with_postponed_annotation_raises_registration_error() -> None:
     registry = make_registry()
 
     class LocalCard(BaseModel):

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import functools
 import inspect
+import types
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -22,6 +23,12 @@ class ReturnAnnotation:
     """The Pydantic models an endpoint's return annotation may produce."""
 
     models: tuple[type[BaseModel], ...]
+    allows_response: bool = False
+    is_sequence: bool = False
+
+
+def _is_response_class(annotation: Any) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, Response)
 
 
 def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
@@ -31,11 +38,36 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
             "cannot determine a template model: the route has no return "
             "annotation and no explicit model was passed to registry.endpoint"
         )
+    if get_origin(annotation) in (types.UnionType, Union):
+        models: list[type[BaseModel]] = []
+        allows_response = False
+        for member in get_args(annotation):
+            if member is type(None):
+                continue
+            if isinstance(member, type) and issubclass(member, BaseModel):
+                models.append(member)
+            elif _is_response_class(member):
+                allows_response = True
+            else:
+                raise TemplateRegistrationError(
+                    f"cannot determine a template model from union member "
+                    f"{member!r} of return annotation {annotation!r}: expected "
+                    f"a BaseModel subclass or a Response subclass"
+                )
+        if not models and not allows_response:
+            raise TemplateRegistrationError(
+                f"cannot determine a template model from return annotation "
+                f"{annotation!r}"
+            )
+        return ReturnAnnotation(models=tuple(models), allows_response=allows_response)
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return ReturnAnnotation(models=(annotation,))
+    if _is_response_class(annotation):
+        return ReturnAnnotation(models=(), allows_response=True)
     raise TemplateRegistrationError(
         f"cannot determine a template model from return annotation "
-        f"{annotation!r}: expected a single BaseModel subclass"
+        f"{annotation!r}: expected a BaseModel subclass, a union of "
+        f"BaseModels, or a Response subclass"
     )
 
 

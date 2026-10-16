@@ -1,9 +1,11 @@
+import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Union
 
 import pytest
-from fastapi import FastAPI, Response
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Response, WebSocket
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -194,6 +196,42 @@ def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
     assert response.headers["location"] == "/target"
 
 
+def test_typing_union_annotation_renders_returned_model(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/pick")
+    @registry.endpoint
+    async def pick(kind: str = "user") -> Union[UserCard, ErrorAlert]:  # noqa: UP007
+        if kind == "error":
+            return ErrorAlert(message="boom")
+        return UserCard(name="Ada")
+
+    client = TestClient(app)
+
+    assert client.get("/pick").text == "<h1>Ada</h1>"
+    assert client.get("/pick?kind=error").text == "<p>boom</p>"
+
+
+def test_custom_response_subclass_passes_through(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    class TeapotResponse(Response):
+        def __init__(self) -> None:
+            super().__init__("short and stout", status_code=418)
+
+    @app.get("/tea")
+    @registry.endpoint
+    async def tea() -> UserCard | TeapotResponse:
+        return TeapotResponse()
+
+    response = TestClient(app).get("/tea")
+
+    assert response.status_code == 418
+    assert response.text == "short and stout"
+
+
 def test_injected_response_headers_cookie_and_status_are_merged(
     tmp_path: Path,
 ) -> None:
@@ -273,3 +311,67 @@ def test_injected_response_merges_onto_sequence_rendering(
     assert response.status_code == 200
     assert response.headers["HX-Trigger"] == "rows"
     assert response.text == "<li>a</li><li>b</li>"
+
+
+def test_websocket_endpoint_sends_rendered_fragments(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.websocket("/ws")
+    async def ws(websocket: WebSocket) -> None:
+        await websocket.accept()
+        await websocket.send_text(registry.render(UserCard(name="Ada")))
+        await websocket.send_text(
+            registry.render([UserRow(name="first"), UserRow(name="second")])
+        )
+        await websocket.close()
+
+    with TestClient(app).websocket_connect("/ws") as session:
+        assert session.receive_text() == "<h1>Ada</h1>"
+        assert session.receive_text() == "<li>first</li><li>second</li>"
+
+
+def test_sse_style_route_yields_rendered_fragments(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/events")
+    async def events() -> StreamingResponse:
+        async def stream():
+            for name in ("a", "b"):
+                yield f"data: {registry.render(UserRow(name=name))}\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    response = TestClient(app).get("/events")
+
+    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
+    assert response.text == "data: <li>a</li>\n\ndata: <li>b</li>\n\n"
+
+
+def test_openapi_builds_with_advanced_return_annotations(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/alerts")
+    @registry.endpoint
+    async def alerts(response: Response) -> UserCard | ErrorAlert:
+        response.headers["HX-Trigger"] = "alerts"
+        return UserCard(name="Ada")
+
+    @app.get("/rows")
+    @registry.endpoint
+    async def rows() -> list[UserRow]:
+        return []
+
+    @app.get("/go")
+    @registry.endpoint
+    async def go() -> UserCard | RedirectResponse:
+        return RedirectResponse("/target")
+
+    schema = app.openapi()
+
+    for path in ("/alerts", "/rows", "/go"):
+        assert schema["paths"][path]["get"]["responses"]["200"]
+    assert "UserCard" not in json.dumps(schema)
+    assert "UserRow" not in json.dumps(schema)

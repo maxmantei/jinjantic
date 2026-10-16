@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -151,3 +152,43 @@ def test_sequence_containing_non_model_fails_at_decoration_time(
 
     with pytest.raises(TemplateRegistrationError):
         registry.endpoint(rows)
+
+
+def test_response_member_of_union_passes_through_untouched(
+    tmp_path: Path,
+) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/go")
+    @registry.endpoint
+    async def go(redirect: bool = False) -> UserCard | RedirectResponse:
+        if redirect:
+            return RedirectResponse("/target", status_code=307)
+        return UserCard(name="Ada")
+
+    client = TestClient(app)
+
+    rendered = client.get("/go")
+    assert rendered.status_code == 200
+    assert rendered.text == "<h1>Ada</h1>"
+
+    passed_through = client.get("/go?redirect=true", follow_redirects=False)
+    assert passed_through.status_code == 307
+    assert passed_through.headers["location"] == "/target"
+    assert passed_through.text == ""
+
+
+def test_bare_response_annotation_passes_through(tmp_path: Path) -> None:
+    registry = build_registry(tmp_path)
+    app = FastAPI()
+
+    @app.get("/legacy")
+    @registry.endpoint
+    async def legacy() -> RedirectResponse:
+        return RedirectResponse("/target", status_code=307)
+
+    response = TestClient(app).get("/legacy", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/target"

@@ -21,16 +21,50 @@ _SEQUENCE_ORIGINS = (list, tuple, Sequence)
 
 
 @dataclass(frozen=True, slots=True)
-class ReturnAnnotation:
+class _ReturnAnnotation:
     """The Pydantic models an endpoint's return annotation may produce."""
 
     models: tuple[type[BaseModel], ...]
-    allows_response: bool = False
-    is_sequence: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponseOptions:
+    """Response metadata applied to rendered endpoint results."""
+
+    status_code: int = 200
+    headers: Mapping[str, str] | None = None
+    media_type: str | None = None
 
 
 def _is_response_class(annotation: Any) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, Response)
+
+
+def _union_models(annotation: Any, *, allow_response: bool) -> list[type[BaseModel]]:
+    """Collect the ``BaseModel`` classes referenced by a union annotation."""
+    models: list[type[BaseModel]] = []
+    for member in get_args(annotation):
+        if member is type(None):
+            raise TemplateRegistrationError(
+                f"cannot determine a template model from union member NoneType "
+                f"of return annotation {annotation!r}: optional returns are not "
+                f"supported, pass an explicit model to registry.endpoint instead"
+            )
+        if isinstance(member, type) and issubclass(member, BaseModel):
+            models.append(member)
+            continue
+        if allow_response and _is_response_class(member):
+            continue
+        expected = (
+            "a BaseModel subclass or a Response subclass"
+            if allow_response
+            else "a BaseModel subclass"
+        )
+        raise TemplateRegistrationError(
+            f"cannot determine a template model from union member {member!r} "
+            f"of return annotation {annotation!r}: expected {expected}"
+        )
+    return models
 
 
 def _sequence_models(annotation: Any) -> list[type[BaseModel]]:
@@ -43,25 +77,8 @@ def _sequence_models(annotation: Any) -> list[type[BaseModel]]:
             models.append(element)
             continue
         if get_origin(element) in (types.UnionType, Union):
-            union_models: list[type[BaseModel]] = []
-            for member in get_args(element):
-                if member is type(None):
-                    raise TemplateRegistrationError(
-                        f"cannot determine a template model from union member "
-                        f"NoneType in sequence return annotation {annotation!r}: "
-                        f"optional returns are not supported, pass an explicit "
-                        f"model to registry.endpoint instead"
-                    )
-                if not (isinstance(member, type) and issubclass(member, BaseModel)):
-                    raise TemplateRegistrationError(
-                        f"cannot determine a template model from union member "
-                        f"{member!r} in sequence return annotation "
-                        f"{annotation!r}: expected a BaseModel subclass"
-                    )
-                union_models.append(member)
-            if union_models:
-                models.extend(union_models)
-                continue
+            models.extend(_union_models(element, allow_response=False))
+            continue
         raise TemplateRegistrationError(
             f"cannot determine a template model from sequence element "
             f"{element!r} of return annotation {annotation!r}: expected "
@@ -74,7 +91,7 @@ def _sequence_models(annotation: Any) -> list[type[BaseModel]]:
     return models
 
 
-def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
+def _analyze_return_annotation(annotation: Any) -> _ReturnAnnotation:
     """Extract the ``BaseModel`` classes referenced by a return annotation."""
     if annotation is inspect.Signature.empty:
         raise TemplateRegistrationError(
@@ -82,26 +99,7 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
             "annotation and no explicit model was passed to registry.endpoint"
         )
     if get_origin(annotation) in (types.UnionType, Union):
-        models: list[type[BaseModel]] = []
-        allows_response = False
-        for member in get_args(annotation):
-            if member is type(None):
-                raise TemplateRegistrationError(
-                    f"cannot determine a template model from union member "
-                    f"NoneType of return annotation {annotation!r}: optional "
-                    f"returns are not supported, pass an explicit model to "
-                    f"registry.endpoint instead"
-                )
-            if isinstance(member, type) and issubclass(member, BaseModel):
-                models.append(member)
-            elif _is_response_class(member):
-                allows_response = True
-            else:
-                raise TemplateRegistrationError(
-                    f"cannot determine a template model from union member "
-                    f"{member!r} of return annotation {annotation!r}: expected "
-                    f"a BaseModel subclass or a Response subclass"
-                )
+        models = _union_models(annotation, allow_response=True)
         if not models:
             raise TemplateRegistrationError(
                 f"cannot determine a template model from return annotation "
@@ -109,13 +107,11 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
                 f"pass an explicit model to registry.endpoint for routes that "
                 f"only return Response objects"
             )
-        return ReturnAnnotation(models=tuple(models), allows_response=allows_response)
+        return _ReturnAnnotation(models=tuple(models))
     if get_origin(annotation) in _SEQUENCE_ORIGINS:
-        return ReturnAnnotation(
-            models=tuple(_sequence_models(annotation)), is_sequence=True
-        )
+        return _ReturnAnnotation(models=tuple(_sequence_models(annotation)))
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return ReturnAnnotation(models=(annotation,))
+        return _ReturnAnnotation(models=(annotation,))
     if _is_response_class(annotation):
         raise TemplateRegistrationError(
             f"cannot determine a template model from return annotation "
@@ -129,7 +125,7 @@ def analyze_return_annotation(annotation: Any) -> ReturnAnnotation:
     )
 
 
-class EndpointDecorator:
+class _EndpointDecorator:
     """Callable bound to a registry as ``registry.endpoint``.
 
     Supports the bare ``@registry.endpoint`` form and the parameterized
@@ -148,26 +144,17 @@ class EndpointDecorator:
         headers: Mapping[str, str] | None = None,
         media_type: str | None = None,
     ) -> Any:
+        options = _ResponseOptions(
+            status_code=status_code, headers=headers, media_type=media_type
+        )
         if fn_or_model is not None and not (
             isinstance(fn_or_model, type) and issubclass(fn_or_model, BaseModel)
         ):
-            return self._decorate(
-                fn_or_model,
-                model=model,
-                status_code=status_code,
-                headers=headers,
-                media_type=media_type,
-            )
+            return self._decorate(fn_or_model, model=model, options=options)
         resolved = model or fn_or_model
 
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-            return self._decorate(
-                fn,
-                model=resolved,
-                status_code=status_code,
-                headers=headers,
-                media_type=media_type,
-            )
+            return self._decorate(fn, model=resolved, options=options)
 
         return decorator
 
@@ -176,15 +163,13 @@ class EndpointDecorator:
         fn: Callable[..., Any],
         *,
         model: type[BaseModel] | None,
-        status_code: int,
-        headers: Mapping[str, str] | None,
-        media_type: str | None,
+        options: _ResponseOptions,
     ) -> Callable[..., Any]:
         signature = _resolved_signature(fn)
         if model is not None:
             models = (model,)
         else:
-            models = analyze_return_annotation(signature.return_annotation).models
+            models = _analyze_return_annotation(signature.return_annotation).models
         self._validate_registered(models)
         response_param = _response_param_name(signature)
 
@@ -192,9 +177,7 @@ class EndpointDecorator:
             return _to_response(
                 result,
                 registry=self._registry,
-                status_code=status_code,
-                headers=headers,
-                media_type=media_type,
+                options=options,
                 injected=injected,
             )
 
@@ -225,16 +208,10 @@ class EndpointDecorator:
 
     def _validate_registered(self, models: tuple[type[BaseModel], ...]) -> None:
         for model in models:
-            if model not in self._registry._bindings:
+            if not self._registry.is_registered(model):
                 raise UnregisteredModelError(
                     f"{model.__qualname__} is not registered in this TemplateRegistry"
                 )
-
-
-def _is_renderable_sequence(result: Any) -> bool:
-    return isinstance(result, Sequence) and not isinstance(
-        result, str | bytes | bytearray
-    )
 
 
 def _resolved_signature(fn: Callable[..., Any]) -> inspect.Signature:
@@ -292,23 +269,17 @@ def _to_response(
     result: Any,
     *,
     registry: TemplateRegistry,
-    status_code: int,
-    headers: Mapping[str, str] | None,
-    media_type: str | None,
+    options: _ResponseOptions,
     injected: Response | None = None,
 ) -> Response:
     if isinstance(result, Response):
         return result
-    if isinstance(result, BaseModel) or _is_renderable_sequence(result):
-        kwargs: dict[str, Any] = {"status_code": status_code, "headers": headers}
-        if media_type is not None:
-            kwargs["media_type"] = media_type
-        rendered = registry.render_response(result, **kwargs)
-        if injected is not None:
-            _merge_injected(rendered, injected)
-        return rendered
-    raise TypeError(
-        f"endpoint decorated with registry.endpoint must return a registered "
-        f"BaseModel, a Sequence of BaseModels, or a Response, "
-        f"got {type(result).__qualname__}"
+    rendered = registry.render_response(
+        result,
+        status_code=options.status_code,
+        headers=options.headers,
+        media_type=options.media_type,
     )
+    if injected is not None:
+        _merge_injected(rendered, injected)
+    return rendered

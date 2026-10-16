@@ -9,7 +9,26 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader, Template, select_autoescape
 from pydantic import BaseModel
 
-from .exceptions import TemplateRegistrationError, UnregisteredModelError
+from .exceptions import (
+    BlockNotFoundError,
+    TemplateRegistrationError,
+    UnregisteredModelError,
+)
+
+type Renderable = BaseModel | Sequence[BaseModel]
+
+
+def _parse_path(path: str, block: str | None) -> tuple[str, str | None]:
+    """Split ``"path.html#block"`` and reconcile it with ``block=...``."""
+    template_name, separator, fragment = path.partition("#")
+    if not separator:
+        return path, block
+    if block is not None and block != fragment:
+        raise TemplateRegistrationError(
+            f"Conflicting block names for {path!r}: "
+            f"path names {fragment!r} but block={block!r} was passed"
+        )
+    return template_name, fragment
 
 
 @dataclass(slots=True)
@@ -19,6 +38,7 @@ class TemplateBinding:
     model: type[BaseModel]
     template_name: str
     template: Template | None = None
+    block_name: str | None = None
 
 
 class TemplateRegistry:
@@ -46,34 +66,55 @@ class TemplateRegistry:
         self._validate_on_register = validate_on_register
         self._bindings: dict[type[BaseModel], TemplateBinding] = {}
 
-    def template[M: BaseModel](self, path: str) -> Callable[[type[M]], type[M]]:
+    def template[M: BaseModel](
+        self, path: str, *, block: str | None = None
+    ) -> Callable[[type[M]], type[M]]:
         """Class decorator binding a Pydantic model to a template."""
 
         def decorator(model: type[M]) -> type[M]:
-            self.register(model, path)
+            self.register(model, path, block=block)
             return model
 
         return decorator
 
-    def register[M: BaseModel](self, model: type[M], path: str) -> type[M]:
+    def register[M: BaseModel](
+        self, model: type[M], path: str, *, block: str | None = None
+    ) -> type[M]:
         """Bind ``model`` to the template at ``path`` and return the model class."""
         if model in self._bindings:
             raise TemplateRegistrationError(
                 f"{model.__qualname__} is already registered in this TemplateRegistry"
             )
-        template = self.env.get_template(path) if self._validate_on_register else None
+        template_name, block_name = _parse_path(path, block)
+        template = (
+            self._resolve(template_name, block_name)
+            if self._validate_on_register
+            else None
+        )
         self._bindings[model] = TemplateBinding(
-            model=model, template_name=path, template=template
+            model=model,
+            template_name=template_name,
+            template=template,
+            block_name=block_name,
         )
         return model
 
     def validate(self) -> None:
         """Validate every registered binding, resolving its template."""
         for binding in self._bindings.values():
-            binding.template = self.env.get_template(binding.template_name)
+            binding.template = self._resolve(binding.template_name, binding.block_name)
 
-    def render(self, data: BaseModel) -> str:
-        """Render a registered model instance to HTML synchronously."""
+    def render(self, data: Renderable) -> str:
+        """Render registered model instance(s) to HTML synchronously."""
+        if isinstance(data, BaseModel):
+            return self._render_one(data)
+        if isinstance(data, str | bytes | bytearray):
+            raise UnregisteredModelError(
+                f"{type(data).__qualname__} is not registered in this TemplateRegistry"
+            )
+        return "".join(self._render_one(model) for model in data)
+
+    def _render_one(self, data: BaseModel) -> str:
         binding = self._bindings.get(type(data))
         if binding is None:
             raise UnregisteredModelError(
@@ -81,12 +122,32 @@ class TemplateRegistry:
             )
         template = binding.template
         if self.env.auto_reload or template is None:
-            template = self.env.get_template(binding.template_name)
-        return template.render(self._context(data))
+            template = self._resolve(binding.template_name, binding.block_name)
+        if binding.block_name is None:
+            return template.render(self._context(data))
+        return template.environment.concat(
+            template.blocks[binding.block_name](
+                template.new_context(self._context(data))
+            )
+        )
+
+    def _resolve(self, template_name: str, block_name: str | None) -> Template:
+        template = self.env.get_template(template_name)
+        self._require_block(template, template_name, block_name)
+        return template
+
+    @staticmethod
+    def _require_block(
+        template: Template, template_name: str, block_name: str | None
+    ) -> None:
+        if block_name is not None and block_name not in template.blocks:
+            raise BlockNotFoundError(
+                f"Template {template_name!r} has no block named {block_name!r}"
+            )
 
     def render_response(
         self,
-        data: BaseModel,
+        data: Renderable,
         *,
         status_code: int = 200,
         headers: Mapping[str, str] | None = None,

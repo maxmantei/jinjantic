@@ -1,14 +1,29 @@
+import json
 from pathlib import Path
 
+import pytest
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 from jinja2 import DictLoader, Environment
 from pydantic import BaseModel
 
-from jinjantic import TemplateRegistry
+from jinjantic import (
+    TemplateRegistrationError,
+    TemplateRegistry,
+    UnregisteredModelError,
+)
 
 
 class UserCard(BaseModel):
+    name: str
+
+
+class ErrorAlert(BaseModel):
+    message: str
+
+
+class UnregisteredCard(BaseModel):
     name: str
 
 
@@ -88,3 +103,128 @@ def test_path_query_request_and_depends_are_resolved(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.text == "<h1>GET 3 go 2</h1>"
+
+
+def test_empty_call_decorator_infers_model_from_annotation() -> None:
+    registry = make_registry()
+    app = FastAPI()
+
+    @app.get("/empty")
+    @registry.endpoint()
+    async def get_card() -> UserCard:
+        return UserCard(name="Empty")
+
+    response = TestClient(app).get("/empty")
+
+    assert response.status_code == 200
+    assert response.text == "<h1>Empty</h1>"
+
+
+def test_keyword_options_without_model_infer_from_annotation() -> None:
+    registry = make_registry()
+    app = FastAPI()
+
+    @app.get("/accepted")
+    @registry.endpoint(status_code=202)
+    async def get_card() -> UserCard:
+        return UserCard(name="Accepted")
+
+    response = TestClient(app).get("/accepted")
+
+    assert response.status_code == 202
+    assert response.text == "<h1>Accepted</h1>"
+
+
+def test_custom_media_type_is_applied() -> None:
+    registry = make_registry()
+    app = FastAPI()
+
+    @app.get("/plain")
+    @registry.endpoint(UserCard, media_type="text/plain")
+    async def get_card() -> UserCard:
+        return UserCard(name="Plain")
+
+    response = TestClient(app).get("/plain")
+
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+def test_openapi_builds_and_documents_html_response_not_model() -> None:
+    registry = make_registry()
+    app = FastAPI()
+
+    @app.get("/users/{user_id}")
+    @registry.endpoint
+    async def get_user(user_id: int) -> UserCard:
+        return UserCard(name=f"user-{user_id}")
+
+    schema = app.openapi()
+
+    assert schema["paths"]["/users/{user_id}"]["get"]["responses"]["200"]
+    assert "UserCard" not in json.dumps(schema)
+
+
+def test_missing_return_annotation_raises_at_decoration_time() -> None:
+    registry = make_registry()
+
+    async def get_card():
+        return UserCard(name="Nope")
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(get_card)
+
+
+def test_unregistered_model_annotation_raises_at_decoration_time() -> None:
+    registry = make_registry()
+
+    async def get_card() -> UnregisteredCard:
+        return UnregisteredCard(name="Nope")
+
+    with pytest.raises(UnregisteredModelError):
+        registry.endpoint(get_card)
+
+
+def test_unregistered_explicit_model_raises_at_decoration_time() -> None:
+    registry = make_registry()
+
+    async def get_card() -> UserCard:
+        return UserCard(name="Nope")
+
+    with pytest.raises(UnregisteredModelError):
+        registry.endpoint(UnregisteredCard)(get_card)
+
+
+def test_union_annotation_is_not_resolvable_yet() -> None:
+    registry = make_registry()
+    registry.register(ErrorAlert, "user-card.html")
+
+    async def get_card() -> UserCard | ErrorAlert:
+        return UserCard(name="Nope")
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(get_card)
+
+
+def test_non_model_annotation_raises_at_decoration_time() -> None:
+    registry = make_registry()
+
+    async def get_count() -> int:
+        return 1
+
+    with pytest.raises(TemplateRegistrationError):
+        registry.endpoint(get_count)
+
+
+def test_response_result_passes_through_with_explicit_model() -> None:
+    registry = make_registry()
+    app = FastAPI()
+
+    @app.get("/go")
+    @registry.endpoint(model=UserCard)
+    async def go() -> UserCard | RedirectResponse:
+        return RedirectResponse("/target", status_code=303)
+
+    response = TestClient(app).get("/go", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/target"

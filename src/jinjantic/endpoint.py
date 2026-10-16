@@ -6,7 +6,7 @@ import functools
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -90,12 +90,11 @@ class EndpointDecorator:
         headers: Mapping[str, str] | None,
         media_type: str | None,
     ) -> Callable[..., Any]:
+        signature = inspect.signature(fn)
         if model is not None:
             models = (model,)
         else:
-            models = analyze_return_annotation(
-                inspect.signature(fn).return_annotation
-            ).models
+            models = analyze_return_annotation(signature.return_annotation).models
         self._validate_registered(models)
 
         def render(result: Any) -> Response:
@@ -119,7 +118,7 @@ class EndpointDecorator:
             def wrapper(*args: Any, **kwargs: Any) -> Response:
                 return render(fn(*args, **kwargs))
 
-        wrapper.__signature__ = inspect.signature(fn).replace(
+        cast(Any, wrapper).__signature__ = signature.replace(
             return_annotation=HTMLResponse
         )
         wrapper.__annotations__ = {**fn.__annotations__, "return": HTMLResponse}

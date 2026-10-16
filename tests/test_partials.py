@@ -2,12 +2,14 @@ import os
 from pathlib import Path
 
 import pytest
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from jinjantic import (
     BlockNotFoundError,
     TemplateRegistrationError,
     TemplateRegistry,
+    UnregisteredModelError,
 )
 
 PAGE = "<body>\n{% block row %}<li>{{ name }}</li>{% endblock %}\n</body>"
@@ -158,6 +160,66 @@ def test_render_raises_block_not_found_when_not_eagerly_validated(
 
     with pytest.raises(BlockNotFoundError):
         registry.render(Row(name="Ada"))
+
+
+class Toast(BaseModel):
+    message: str
+
+
+def test_sequence_render_concatenates_fragments_in_order(tmp_path: Path) -> None:
+    write_template(tmp_path, "row.html", "<li>{{ name }}</li>")
+    write_template(tmp_path, "toast.html", "<div>{{ message }}</div>")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Row, "row.html")
+    registry.register(Toast, "toast.html")
+
+    html = registry.render([Row(name="Ada"), Toast(message="Saved"), Row(name="Grace")])
+
+    assert html == "<li>Ada</li><div>Saved</div><li>Grace</li>"
+
+
+def test_sequence_render_accepts_tuples(tmp_path: Path) -> None:
+    write_template(tmp_path, "row.html", "<li>{{ name }}</li>")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Row, "row.html")
+
+    html = registry.render((Row(name="Ada"), Row(name="Grace")))
+
+    assert html == "<li>Ada</li><li>Grace</li>"
+
+
+def test_sequence_render_rejects_unregistered_element(tmp_path: Path) -> None:
+    write_template(tmp_path, "row.html", "<li>{{ name }}</li>")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Row, "row.html")
+
+    class OtherRow(BaseModel):
+        name: str
+
+    with pytest.raises(UnregisteredModelError):
+        registry.render([Row(name="Ada"), OtherRow(name="Grace")])
+
+
+def test_string_argument_is_not_treated_as_a_sequence(tmp_path: Path) -> None:
+    write_template(tmp_path, "row.html", "<li>{{ name }}</li>")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Row, "row.html")
+
+    with pytest.raises(UnregisteredModelError):
+        registry.render("row.html")  # ty: ignore[invalid-argument-type]
+
+
+def test_render_response_concatenates_sequence_fragments(tmp_path: Path) -> None:
+    write_template(tmp_path, "row.html", "<li>{{ name }}</li>")
+    write_template(tmp_path, "toast.html", "<div>{{ message }}</div>")
+    registry = TemplateRegistry(tmp_path)
+    registry.register(Row, "row.html")
+    registry.register(Toast, "toast.html")
+
+    response = registry.render_response([Row(name="Ada"), Toast(message="Saved")])
+
+    assert isinstance(response, HTMLResponse)
+    assert response.body == b"<li>Ada</li><div>Saved</div>"
 
 
 def test_auto_reload_true_reflects_block_edits(tmp_path: Path) -> None:

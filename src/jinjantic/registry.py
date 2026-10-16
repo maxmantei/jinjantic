@@ -15,6 +15,8 @@ from .exceptions import (
     UnregisteredModelError,
 )
 
+type Renderable = BaseModel | Sequence[BaseModel]
+
 
 def _parse_path(path: str, block: str | None) -> tuple[str, str | None]:
     """Split ``"path.html#block"`` and reconcile it with ``block=...``."""
@@ -102,8 +104,17 @@ class TemplateRegistry:
         for binding in self._bindings.values():
             binding.template = self._resolve(binding.template_name, binding.block_name)
 
-    def render(self, data: BaseModel) -> str:
-        """Render a registered model instance to HTML synchronously."""
+    def render(self, data: Renderable) -> str:
+        """Render registered model instance(s) to HTML synchronously."""
+        if isinstance(data, BaseModel):
+            return self._render_one(data)
+        if isinstance(data, str | bytes | bytearray):
+            raise UnregisteredModelError(
+                f"{type(data).__qualname__} is not registered in this TemplateRegistry"
+            )
+        return "".join(self._render_one(model) for model in data)
+
+    def _render_one(self, data: BaseModel) -> str:
         binding = self._bindings.get(type(data))
         if binding is None:
             raise UnregisteredModelError(
@@ -136,7 +147,7 @@ class TemplateRegistry:
 
     def render_response(
         self,
-        data: BaseModel,
+        data: Renderable,
         *,
         status_code: int = 200,
         headers: Mapping[str, str] | None = None,

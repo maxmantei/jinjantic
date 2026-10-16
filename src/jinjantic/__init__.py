@@ -1,4 +1,5 @@
 from .exceptions import (
+    BlockNotFoundError,
     JinjanticError,
     TemplateRegistrationError,
     UnregisteredModelError,
@@ -6,6 +7,7 @@ from .exceptions import (
 from .registry import TemplateRegistry
 
 __all__ = [
+    "BlockNotFoundError",
     "JinjanticError",
     "TemplateRegistrationError",
     "TemplateRegistry",

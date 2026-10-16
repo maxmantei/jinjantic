@@ -8,3 +8,7 @@ class TemplateRegistrationError(JinjanticError):
 
 class UnregisteredModelError(JinjanticError):
     """Raised when rendering a model whose class is not registered."""
+
+
+class BlockNotFoundError(JinjanticError):
+    """Raised when a template does not define the requested block."""

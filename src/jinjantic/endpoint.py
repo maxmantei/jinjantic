@@ -155,9 +155,7 @@ class _EndpointDecorator:
         headers: Mapping[str, str] | None = None,
         media_type: str | None = None,
     ) -> Any:
-        options = _ResponseOptions(
-            status_code=status_code, headers=headers, media_type=media_type
-        )
+        options = _ResponseOptions(status_code=status_code, headers=headers, media_type=media_type)
         if fn_or_model is None:
             resolved = model
         elif _is_model_class(fn_or_model):
@@ -212,9 +210,7 @@ class _EndpointDecorator:
                 injected = injected_response(args, kwargs)
                 return render(fn(*args, **kwargs), injected)
 
-        cast(Any, wrapper).__signature__ = signature.replace(
-            return_annotation=HTMLResponse
-        )
+        cast(Any, wrapper).__signature__ = signature.replace(return_annotation=HTMLResponse)
         wrapper.__annotations__ = {**fn.__annotations__, "return": HTMLResponse}
         return wrapper
 

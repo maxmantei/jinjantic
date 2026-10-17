@@ -438,9 +438,7 @@ def test_websocket_endpoint_sends_rendered_fragments(tmp_path: Path) -> None:
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
         await websocket.send_text(registry.render(UserCard(name="Ada")))
-        await websocket.send_text(
-            registry.render([UserRow(name="first"), UserRow(name="second")])
-        )
+        await websocket.send_text(registry.render([UserRow(name="first"), UserRow(name="second")]))
         await websocket.close()
 
     with TestClient(app).websocket_connect("/ws") as session:

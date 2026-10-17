@@ -1,7 +1,7 @@
 [project]
 name = "jinjantic"
 version = "0.1.0"
-description = "Add your description here"
+description = "Typed Jinja2 templates for FastAPI powered by Pydantic models"
 readme = "README.md"
 authors = [
     { name = "Max Mantei", email = "max.mantei@gmail.com" }
@@ -24,3 +24,25 @@ dev = [
     "ruff>=0.17.1",
     "ty>=0.0.89",
 ]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I"]
+
+[tool.pyright]
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+
+[tool.ty.src]
+include = ["src", "tests"]
+exclude = [".venv"]
+
+[tool.ty.environment]
+python = ".venv/bin/python"

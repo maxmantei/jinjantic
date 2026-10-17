@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import bump_mtime, write_template
 from fastapi.responses import HTMLResponse
 from jinja2 import (
     DictLoader,
@@ -13,6 +12,7 @@ from jinja2 import (
 )
 from pydantic import BaseModel, ConfigDict, computed_field
 
+from conftest import bump_mtime, write_template
 from jinjantic import (
     JinjanticError,
     TemplateRegistrationError,
@@ -205,9 +205,7 @@ def test_deferred_lazy_resolve_does_no_disk_io_with_uncached_environment(
     tmp_path: Path,
 ) -> None:
     path = write_template(tmp_path, "card.html", "Hello {{ name }}!")
-    env = Environment(
-        loader=FileSystemLoader(tmp_path), cache_size=0, auto_reload=False
-    )
+    env = Environment(loader=FileSystemLoader(tmp_path), cache_size=0, auto_reload=False)
     registry = TemplateRegistry(env, validate_on_register=False)
     registry.register(Card, "card.html")
 
@@ -256,9 +254,7 @@ def test_context_keeps_nested_models_and_methods_live() -> None:
         user: Profile
 
     env = Environment(
-        loader=DictLoader(
-            {"card.html": "{{ user.display_name() }} {{ user.shouty_name }}"}
-        )
+        loader=DictLoader({"card.html": "{{ user.display_name() }} {{ user.shouty_name }}"})
     )
     registry = TemplateRegistry(env)
     registry.register(UserCard, "card.html")

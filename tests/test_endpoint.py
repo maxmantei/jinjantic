@@ -24,9 +24,7 @@ class UnregisteredCard(BaseModel):
 
 
 def make_registry(template: str = "<h1>{{ name }}</h1>") -> TemplateRegistry:
-    registry = TemplateRegistry(
-        Environment(loader=DictLoader({"user-card.html": template}))
-    )
+    registry = TemplateRegistry(Environment(loader=DictLoader({"user-card.html": template})))
     registry.register(UserCard, "user-card.html")
     return registry
 

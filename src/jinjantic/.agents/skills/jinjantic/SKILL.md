@@ -114,9 +114,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # Single model -> str
     await websocket.send_text(registry.render(UserProfile(first="Ada", last="Lovelace")))
     # Sequence of models -> concatenated str (great for HTMX out-of-band swaps)
-    await websocket.send_text(
-        registry.render([UserRow(name="Ada"), UserRow(name="Grace")])
-    )
+    await websocket.send_text(registry.render([UserRow(name="Ada"), UserRow(name="Grace")]))
     await websocket.close()
 ```
 

@@ -4,9 +4,19 @@ Typed Jinja2 templates for FastAPI powered by Pydantic models.
 
 ## Installation
 
+Install a pinned release (recommended):
+
 ```bash
-uv add jinjantic
+uv add "jinjantic @ git+https://github.com/maxmantei/jinjantic.git@v0.1.0"
 ```
+
+Or follow the latest stable release (`main` only advances when a release is tagged):
+
+```bash
+uv add "jinjantic @ git+https://github.com/maxmantei/jinjantic.git@main"
+```
+
+Always specify a ref: an install without one resolves the repository's default branch (`dev`), which is under active development.
 
 If you use AI coding agents, link the bundled library skill into your project with [Library Skills](https://library-skills.io):
 
@@ -74,9 +84,7 @@ async def stream_users(websocket: WebSocket) -> None:
     await websocket.send_text(registry.render(UserRow(name="Ada")))
 
     # Render and concatenate multiple fragments in one message
-    await websocket.send_text(
-        registry.render([UserRow(name="Grace"), UserRow(name="Margaret")])
-    )
+    await websocket.send_text(registry.render([UserRow(name="Grace"), UserRow(name="Margaret")]))
 
     await websocket.close()
 ```
